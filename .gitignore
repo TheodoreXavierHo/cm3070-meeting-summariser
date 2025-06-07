@@ -1,0 +1,29 @@
+# --- Python basics ---
+__pycache__/
+*.py[cod]
+*.so           # compiled C extensions
+
+# --- Virtual environments ---
+venv/
+.env/
+.env*/         # Conda, Pipenv
+
+# --- Jupyter / VSCode / JetBrains ---
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# --- Data & outputs ---
+data/**/*.mp4
+data/**/*.wav
+outputs/
+*.jsonl
+*.log
+
+# --- Model downloads (Whisper, LLaMA, etc.) ---
+whisper-cache/
+~/.cache/huggingface/
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
