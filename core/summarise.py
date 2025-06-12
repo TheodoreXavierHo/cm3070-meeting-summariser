@@ -4,15 +4,19 @@ Usage: python core/summarise.py
 Reads outputs/transcript.json and writes
 outputs/summary.txt & outputs/actions.txt
 """
-import json, re
+import json, re, torch
 from transformers import pipeline
 
+# Load transcript
 transcript = json.load(open("outputs/transcript.json"))["text"][:4096]
+
+# Choose device: GPU 0 if available, otherwise CPU
+device = 0 if torch.cuda.is_available() else -1
 
 summariser = pipeline(
     "summarization",
     model="facebook/bart-large-cnn",
-    device=0      # -1 for CPU
+    device=device
 )
 
 prompt = (
@@ -29,6 +33,7 @@ parts = re.split(r"(?i)action items?:", out, maxsplit=1)
 summary = parts[0].strip()
 actions = parts[1].strip() if len(parts) == 2 else "No clear action items detected."
 
+# Write outputs
 with open("outputs/summary.txt", "w") as f:
     f.write(summary)
 
