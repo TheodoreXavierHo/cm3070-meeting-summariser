@@ -1,20 +1,33 @@
 # core/transcribe.py
-"""
-Usage: python core/transcribe.py path/to/audio.mp3
-Saves JSON transcript to outputs/transcript.json
-Prints runtime & rough WER placeholder.
-"""
-import time, sys, json, whisper
-from pathlib import Path
+import sys
+import torch
+from faster_whisper import WhisperModel
 
-audio_path = Path(sys.argv[1])
-start = time.time()
+def transcribe_audio(filepath):
+    # You can adjust the model size ("base", "small", "medium", "large-v2", etc.)
+    model_size = "medium"
+    # Detect GPU if available, else use CPU
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
 
-model = whisper.load_model("medium")          # ~1.4 GB; fits in 12 GB VRAM
-result = model.transcribe(str(audio_path))
+    model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
 
-Path("outputs").mkdir(exist_ok=True)
-json.dump(result, open("outputs/transcript.json", "w"))
+    segments, info = model.transcribe(filepath, beam_size=5)
+    print(f"Detected language: {info.language}")
 
-print(f"Transcription finished in {time.time()-start:.1f}s")
-print(f"Total tokens: {len(result['text'].split())}")
+    full_text = ""
+    for segment in segments:
+        print(f"[{segment.start:.2f}s - {segment.end:.2f}s] {segment.text}")
+        full_text += segment.text + " "
+    return full_text.strip()
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python transcribe.py <audiofile.wav>")
+        sys.exit(1)
+    audiofile = sys.argv[1]
+    transcript = transcribe_audio(audiofile)
+    # Save transcript to file
+    with open("outputs/transcript.txt", "w", encoding="utf-8") as f:
+        f.write(transcript)
+    print("Transcript saved to outputs/transcript.txt")
