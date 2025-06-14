@@ -19,6 +19,7 @@ data/**/*.wav
 outputs/
 *.jsonl
 *.log
+data/samples/
 
 # --- Model downloads (Whisper, LLaMA, etc.) ---
 whisper-cache/
