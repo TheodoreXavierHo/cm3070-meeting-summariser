@@ -4,7 +4,11 @@ import subprocess
 import sys  # Ensures subprocesses use the venv Python
 
 st.title("Multimodal Meeting Summariser (CM3070 Prototype)")
-st.write("Upload a meeting audio file to generate a transcript, summary, and action items.")
+st.markdown(
+    "> **Prototype Notice:** This tool is a functional demo. "
+    "Summaries and action items may be incomplete or imperfect for long or complex meetings. "
+    "See report for limitations and future improvements."
+)
 
 # Ensure data and outputs directories exist
 os.makedirs("data/samples", exist_ok=True)
@@ -58,38 +62,44 @@ if uploaded_file:
     st.header("Results")
     tabs = st.tabs(["Transcript", "Summary", "Action Items"])
 
-    # Transcript
+    # Transcript Tab
     with tabs[0]:
         try:
             with open("outputs/transcript.txt", "r", encoding="utf-8") as f:
-                st.text_area("Transcript", f.read(), height=300)
+                transcript = f.read()
+            with st.expander("Show Transcript", expanded=True):
+                st.text_area("Transcript", transcript, height=300)
+            st.download_button("Download transcript.txt", transcript, file_name="transcript.txt")
         except FileNotFoundError:
             st.error("Transcript not found.")
 
-    # Summary
+    # Summary Tab
     with tabs[1]:
         try:
             with open("outputs/summary.txt", "r", encoding="utf-8") as f:
-                st.text_area("Summary", f.read(), height=200)
+                summary = f.read()
+            with st.expander("Show Summary", expanded=True):
+                st.markdown("#### 150-word summary\n")
+                st.markdown(summary.replace('\n', '  \n'))
+            st.download_button("Download summary.txt", summary, file_name="summary.txt")
         except FileNotFoundError:
             st.error("Summary not found.")
 
-    # Action Items
+    # Action Items Tab
     with tabs[2]:
         try:
             with open("outputs/action_items.txt", "r", encoding="utf-8") as f:
-                st.text_area("Action Items", f.read(), height=200)
+                actions = f.read()
+            with st.expander("Show Action Items", expanded=True):
+                st.markdown("#### Action Items (task – owner – due date)\n")
+                # Try to pretty print bullets if present
+                if "-" in actions or "*" in actions:
+                    st.markdown(actions.replace('-', '\n-').replace('*', '\n*'))
+                else:
+                    st.text_area("Action Items", actions, height=200)
+            st.download_button("Download action_items.txt", actions, file_name="action_items.txt")
         except FileNotFoundError:
             st.error("Action items not found.")
 
-    # Download buttons
-    st.markdown("### Download outputs")
-    for outname in ["transcript.txt", "summary.txt", "action_items.txt"]:
-        output_file = f"outputs/{outname}"
-        if os.path.exists(output_file):
-            with open(output_file, "rb") as f:
-                st.download_button(
-                    f"Download {outname}", f, file_name=outname
-                )
 else:
     st.info("Please upload a meeting audio file to start.")
