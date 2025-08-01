@@ -5,7 +5,7 @@ from faster_whisper import WhisperModel
 
 def transcribe_audio(filepath, output_path="outputs/transcript.txt"):
     # Adjustable model size ("base", "small", "medium", "large-v2", etc.)
-    model_size = "medium"
+    model_size = "large-v2"
     # Detect GPU if available, else use CPU
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")

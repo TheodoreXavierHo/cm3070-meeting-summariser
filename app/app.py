@@ -39,7 +39,7 @@ if uploaded_file:
             st.stop()
 
     # --- Run summariser (summarise.py) ---
-    with st.spinner("Summarising transcript (BART)..."):
+    with st.spinner("Summarising transcript..."):
         result = subprocess.run(
             [sys.executable, "core/summarise.py", "outputs/transcript.txt"],
             capture_output=True, text=True
@@ -79,24 +79,20 @@ if uploaded_file:
             with open("outputs/summary.txt", "r", encoding="utf-8") as f:
                 summary = f.read()
             with st.expander("Show Summary", expanded=True):
-                st.markdown("#### 150-word summary\n")
+                st.markdown("#### Meeting Summary\n")
                 st.markdown(summary.replace('\n', '  \n'))
             st.download_button("Download summary.txt", summary, file_name="summary.txt")
         except FileNotFoundError:
             st.error("Summary not found.")
 
-    # Action Items Tab
+    # Action Items Tab (updated)
     with tabs[2]:
         try:
             with open("outputs/action_items.txt", "r", encoding="utf-8") as f:
-                actions = f.read()
+                actions = f.read().strip()
             with st.expander("Show Action Items", expanded=True):
-                st.markdown("#### Action Items (task – owner – due date)\n")
-                # Try to pretty print bullets if present
-                if "-" in actions or "*" in actions:
-                    st.markdown(actions.replace('-', '\n-').replace('*', '\n*'))
-                else:
-                    st.text_area("Action Items", actions, height=200)
+                st.markdown("#### Action Items")
+                st.markdown(actions)
             st.download_button("Download action_items.txt", actions, file_name="action_items.txt")
         except FileNotFoundError:
             st.error("Action items not found.")
