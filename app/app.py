@@ -6,6 +6,7 @@ import subprocess
 import sys
 import shutil
 import re
+import time
 
 # ---------- Utility functions ----------
 
@@ -199,6 +200,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
+    start_time = time.time()   # <<< TIMER START
     input_ext = os.path.splitext(uploaded_file.name)[1].lower()
     input_path = f"data/samples/input{input_ext}"
     save_uploaded_file(uploaded_file, input_path)
@@ -220,11 +222,15 @@ if uploaded_file:
         shutil.rmtree("data/frames")
         os.makedirs("data/frames", exist_ok=True)
 
+    # --- Progress bar setup ---
+    progress = st.progress(0, "Starting pipeline...")
+
     # 1. Transcription (audio or video)
     with st.spinner("Transcribing audio (Whisper ASR)..."):
         run_subprocess([sys.executable, "core/transcribe.py", input_path], desc="Transcribing audio/video to transcript")
         if not os.path.exists(transcript_path) or os.path.getsize(transcript_path) == 0:
             st.warning("Transcription failed or transcript is empty. Continuing pipeline anyway.")
+    progress.progress(1/5, "Step 1/5: Transcription complete.")
 
     # 2. Slide OCR (if video)
     slides_exist = False
@@ -235,23 +241,33 @@ if uploaded_file:
             slides_exist = os.path.exists(slides_path) and os.path.getsize(slides_path) > 0
             if not slides_exist:
                 st.warning("Slide OCR failed or no slide text detected. Continuing pipeline anyway.")
+    progress.progress(2/5, "Step 2/5: Slide OCR complete.")
 
     # 3. Combine slides + transcript (handles empty gracefully)
     with st.spinner("Combining transcript and slide text..."):
         slides_path_to_use = slides_path if (is_video and slides_exist) else ""
         combine_transcript_and_slides(transcript_path, slides_path_to_use, combined_path)
+    progress.progress(3/5, "Step 3/5: Transcript and slide text combined.")
 
     # 4. Summarisation
     with st.spinner("Summarising meeting (LLM)..."):
         run_subprocess([sys.executable, "core/summarise.py", combined_path], desc="Generating summary from combined transcript")
         if not os.path.exists(summary_path) or os.path.getsize(summary_path) == 0:
             st.warning("Summary not generated. Continuing pipeline anyway.")
+    progress.progress(4/5, "Step 4/5: Meeting summarised.")
 
     # 5. Action item extraction
     with st.spinner("Extracting action items..."):
         run_subprocess([sys.executable, "core/extract_actions.py", combined_path], desc="Extracting action items from combined transcript")
         if not os.path.exists(action_items_path) or os.path.getsize(action_items_path) == 0:
             st.warning("Action items not generated. Continuing pipeline anyway.")
+    progress.progress(5/5, "Step 5/5: Action items extracted.")
+    progress.empty()  # remove bar after all done
+
+    # --- Show elapsed time before displaying results ---
+    end_time = time.time()
+    elapsed = end_time - start_time
+    st.success(f"⏱️ Total processing time: {elapsed:.1f} seconds ({int(elapsed//60)} min {int(elapsed%60)} sec)")
 
     # --- Display results ---
     st.header("Results")
