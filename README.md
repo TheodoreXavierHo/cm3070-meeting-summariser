@@ -30,18 +30,31 @@
 ## System Overview
 
 ```mermaid
-flowchart LR
-    A[Audio/Video Upload] --> B[Transcribe Speech (Whisper)]
-    A --> C{Is Video?}
-    C --Yes--> D[Extract Frames & OCR Slides (EasyOCR)]
-    D --> E[Slide Text]
-    B --> F[Transcript]
-    F --> G[Combine Transcript & Slides]
+flowchart TD
+    A[Audio/Video Upload]
+    B[Transcribe Speech (Whisper)]
+    C{Is Video?}
+    D[Extract Frames & OCR Slides (EasyOCR)]
+    E[Slide Text]
+    F[Transcript]
+    G[Combine Transcript & Slides]
+    H[Summarise (Granite-3.2-8B)]
+    I[Extract Action Items (Granite-3.2-8B)]
+    J[Summary]
+    K[Action Items]
+
+    A --> B
+    B --> F
+    A --> C
+    C -- No --> F
+    C -- Yes --> D
+    D --> E
     E --> G
-    G --> H[Summarise (Granite-3.2-8B)]
-    G --> I[Extract Action Items (Granite-3.2-8B)]
-    H --> J[Summary]
-    I --> K[Action Items]
+    F --> G
+    G --> H
+    G --> I
+    H --> J
+    I --> K
 ```
 
 ---
