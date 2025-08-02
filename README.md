@@ -29,33 +29,9 @@
 
 ## System Overview
 
-```mermaid
-flowchart TD
-    A[Audio/Video Upload]
-    B[Transcribe Speech (Whisper)]
-    C{Is Video?}
-    D[Extract Frames & OCR Slides (EasyOCR)]
-    E[Slide Text]
-    F[Transcript]
-    G[Combine Transcript & Slides]
-    H[Summarise (Granite-3.2-8B)]
-    I[Extract Action Items (Granite-3.2-8B)]
-    J[Summary]
-    K[Action Items]
+![System Overview](./Diagram_FYP.png)
 
-    A --> B
-    B --> F
-    A --> C
-    C -- No --> F
-    C -- Yes --> D
-    D --> E
-    E --> G
-    F --> G
-    G --> H
-    G --> I
-    H --> J
-    I --> K
-```
+The system processes audio or video input, extracts slides and transcript, fuses both, and generates summaries and action items—all in a privacy-first, local pipeline.
 
 ---
 
