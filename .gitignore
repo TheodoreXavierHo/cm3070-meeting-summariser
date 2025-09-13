@@ -32,3 +32,4 @@ Thumbs.db
 # AMI full corpus (huge)
 data/raw/ami_full/
 /data/frames
+/.venv
