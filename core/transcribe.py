@@ -11,7 +11,9 @@ import sys
 import os
 import subprocess
 import torch
+import shutil
 from faster_whisper import WhisperModel
+from imageio_ffmpeg import get_ffmpeg_exe
 
 def is_video_file(filepath):
     """
@@ -29,25 +31,43 @@ def is_audio_file(filepath):
 
 def extract_audio_from_video(video_path, audio_path="outputs/tmp_audio.wav"):
     """
-    Extracts the audio track from a video file using ffmpeg.
+    Extract the audio track from a video file using ffmpeg.
+    Prefer a portable binary from imageio-ffmpeg; fall back to system ffmpeg.
     Returns the audio file path.
     """
+
+    # Resolve ffmpeg executable
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe  # requires imageio-ffmpeg
+        ffmpeg = get_ffmpeg_exe()
+    except Exception:
+        ffmpeg = shutil.which("ffmpeg") or "ffmpeg"  # last-resort fallback
+
+    # Ensure the output directory exists
+    out_dir = os.path.dirname(audio_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+
     cmd = [
-        "ffmpeg",
-        "-y",                   # Overwrite without asking
-        "-i", video_path,
-        "-vn",                  # No video output
-        "-acodec", "pcm_s16le", # WAV format
+        ffmpeg,
+        "-y",                   # Overwrite without prompting
+        "-i", str(video_path),
+        "-vn",                  # No video
+        "-acodec", "pcm_s16le", # WAV (16-bit PCM)
         "-ar", "16000",         # 16 kHz
         "-ac", "1",             # Mono
-        audio_path
+        str(audio_path),
     ]
-    print(f"Extracting audio from {video_path} -> {audio_path}")
+
+    print(f"Extracting audio via '{ffmpeg}' from {video_path} -> {audio_path}")
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
-        print(f"ffmpeg failed: {e.stderr.decode('utf-8')}")
-        raise RuntimeError("Audio extraction with ffmpeg failed.")
+        # Include a short tail of stderr for easier debugging
+        err = (e.stderr or b"").decode("utf-8", errors="ignore")
+        tail = err[-800:]  # last ~800 chars
+        print(f"[ffmpeg] failed with code {e.returncode}:\n{tail}")
+        raise RuntimeError("Audio extraction with ffmpeg failed.") from e
+
     return audio_path
 
 def transcribe_audio(filepath, output_path="outputs/transcript.txt", model_size="large-v2"):

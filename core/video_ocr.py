@@ -72,7 +72,9 @@ def perform_ocr_on_frames(frame_files: List[str], lang: str = 'en', gpu: bool = 
     """
     Step 3: Run EasyOCR on unique frames; returns list of OCR results (strings).
     """
-    reader = easyocr.Reader([lang], gpu=gpu)
+    # Suppress verbose progress bar (causes Unicode issues on Windows consoles)
+    reader = easyocr.Reader([lang], gpu=gpu, verbose=False)
+
     slide_texts = []
     for idx, frame_path in enumerate(frame_files):
         try:
