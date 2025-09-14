@@ -1,83 +1,84 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
+title CM3070 Summariser - launcher
 
 REM ---- paths ----
-set VENV_DIR=.venv
-set REQ_HASH_FILE=%VENV_DIR%\.req_hash
-set REQ_HASH_CUR=%VENV_DIR%\.req_hash.cur
+set "VENV_DIR=.venv"
+set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
+set "REQ_FILE=requirements.txt"
+set "REQ_HASH_FILE=%VENV_DIR%\.req_hash"
 
-REM ---- 0) create venv once ----
-if not exist "%VENV_DIR%" (
+echo [run_app] Working dir: %CD%
+
+REM ---- 0) create venv if missing ----
+if not exist "%VENV_PY%" (
   echo [run_app] Creating virtual environment...
-  python -m venv "%VENV_DIR%"
-  if errorlevel 1 (
-    echo [run_app] Failed to create venv. Is Python on PATH?
-    exit /b 1
+  py -3 -m venv "%VENV_DIR%" 2>nul || (
+    echo [run_app] 'py' not found; trying 'python'...
+    python -m venv "%VENV_DIR%" || (
+      echo [run_app][ERROR] Could not create virtualenv.
+      exit /b 1
+    )
   )
 )
 
-REM ---- 1) activate venv ----
-call "%VENV_DIR%\Scripts\activate"
+REM ---- 1) upgrade pip ----
+echo [run_app] Upgrading pip...
+"%VENV_PY%" -m pip install --upgrade pip wheel setuptools
 if errorlevel 1 (
-  echo [run_app] Failed to activate venv.
+  echo [run_app][ERROR] pip upgrade failed.
   exit /b 1
 )
 
-REM ---- 2) install/upgrade pip just once (optional) ----
-if not exist "%VENV_DIR%\.pip_upgraded" (
-  echo [run_app] Upgrading pip (one-time)...
-  python -m pip install --upgrade pip
-  if errorlevel 1 goto :pipfail
-  echo done> "%VENV_DIR%\.pip_upgraded"
+REM ---- 2) install/refresh requirements on change ----
+if not exist "%REQ_FILE%" (
+  echo [run_app][ERROR] %REQ_FILE% not found.
+  exit /b 1
 )
 
-REM ---- 3) if NVIDIA GPU present and torch CUDA not active, fix torch FIRST ----
-where nvidia-smi >nul 2>&1
-if not errorlevel 1 (
-  for /f %%I in ('python -c "import sys; \
-try:\n import torch;print('ok' if getattr(torch,'cuda',None) and torch.cuda.is_available() else 'bad') \
-\nexcept Exception:\n print('missing')"') do set TORCH_OK=%%I
-  if not "%TORCH_OK%"=="ok" (
-    echo [run_app] NVIDIA GPU detected, ensuring CUDA torch wheels...
-    python tools\install_torch.py
-    if errorlevel 1 (
-      echo [run_app] Torch install/upgrade failed. Close Streamlit/terminals using the venv and run again.
-      exit /b 1
-    )
-  ) else (
-    echo [run_app] CUDA torch already active; skipping torch install.
+REM compute hash of requirements.txt using certutil (available on Win10+)
+for /f "tokens=1" %%H in ('certutil -hashfile "%REQ_FILE%" SHA256 ^| find /i /v "hash" ^| find /i /v "certutil"') do set "REQ_HASH=%%H"
+
+set "NEED_REINSTALL=1"
+if exist "%REQ_HASH_FILE%" (
+  set /p OLD_HASH=<"%REQ_HASH_FILE%"
+  if /i "!OLD_HASH!"=="!REQ_HASH!" set "NEED_REINSTALL=0"
+)
+
+if "!NEED_REINSTALL!"=="1" (
+  echo [run_app] Installing Python deps from %REQ_FILE% ...
+  "%VENV_PY%" -m pip install -r "%REQ_FILE%"
+  if errorlevel 1 (
+    echo [run_app][ERROR] pip install failed.
+    exit /b 1
+  )
+  >"%REQ_HASH_FILE%" echo !REQ_HASH!
+) else (
+  echo [run_app] Requirements unchanged; skipping reinstall.
+)
+
+REM ---- 3) install Torch (CUDA if NVIDIA GPU present, else CPU) ----
+REM     This script auto-detects GPU and selects proper wheels.
+REM     Make sure the filename is tools\install_torch.py (NOT "install_touch.py").
+if exist "tools\install_torch.py" (
+  echo [run_app] Ensuring PyTorch is installed...
+  "%VENV_PY%" "tools\install_torch.py"
+  if errorlevel 1 (
+    echo [run_app][WARN] Torch install reported an issue; continuing anyway.
   )
 ) else (
-  echo [run_app] No NVIDIA GPU detected; skipping CUDA torch step.
+  echo [run_app][WARN] tools\install_torch.py not found; skipping Torch step.
 )
 
-REM ---- 4) install project requirements ONLY if requirements.txt changed ----
-certutil -hashfile requirements.txt SHA256 > "%REQ_HASH_CUR%" 2>nul
-if not exist "%REQ_HASH_FILE%" (
-  set NEED_REQ=1
-) else (
-  fc /b "%REQ_HASH_FILE%" "%REQ_HASH_CUR%" >nul 2>&1
-  if errorlevel 1 ( set NEED_REQ=1 ) else ( set NEED_REQ=0 )
+REM ---- 4) launch Streamlit ----
+if not exist "app\app.py" (
+  echo [run_app][ERROR] app\app.py not found.
+  exit /b 1
 )
 
-if "%NEED_REQ%"=="1" (
-  echo [run_app] Installing/updating Python deps from requirements.txt...
-  python -m pip install -r requirements.txt
-  if errorlevel 1 goto :pipfail
-  move /Y "%REQ_HASH_CUR%" "%REQ_HASH_FILE%" >nul
-) else (
-  del "%REQ_HASH_CUR%" >nul 2>&1
-  echo [run_app] Requirements unchanged; skipping pip install.
-)
-
-REM ---- 5) launch app ----
 echo [run_app] Starting Streamlit...
-python -m streamlit run app.py
-goto :end
+"%VENV_PY%" -m streamlit run "app\app.py"
+set "EC=%ERRORLEVEL%"
+echo [run_app] Streamlit exited with code %EC%
 
-:pipfail
-echo [run_app] pip failed (network or permissions). Fix and re-run.
-exit /b 1
-
-:end
-endlocal
+endlocal & exit /b %EC%
