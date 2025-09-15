@@ -10,35 +10,33 @@ Key features:
 - Optional bitsandbytes quant with GPU offload; safe CPU fallback
 - Deterministic, conservative generation settings
 - Markdown-structured output for Streamlit (Overview / Key Points / Decisions / Action Items)
+- Anti-loop + robust canonicalizer: prompts + generator constraints + parser that rebuilds clean Markdown
 """
 
 import os
 import re
 import sys
-from typing import List, Tuple, Iterable
+from typing import List, Tuple, Iterable, Dict
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 import torch
 
 # ====== High-level knobs ======
 WORD_LIMIT = 500
-# Token-based chunking; override via env FYP_MAX_INPUT_TOKENS if needed
 MAX_INPUT_TOKENS = int(os.getenv("FYP_MAX_INPUT_TOKENS", "2048"))
 OVERLAP_TOKENS   = int(os.getenv("FYP_OVERLAP_TOKENS", "256"))
-BATCH_SIZE       = int(os.getenv("FYP_BATCH", "2"))  # prompts per forward pass
-USE_CACHE        = os.getenv("FYP_USE_CACHE", "1") != "0"  # KV cache (more VRAM but faster)
-REPETITION_PENALTY = float(os.getenv("FYP_REPETITION_PENALTY", "1.05"))
+BATCH_SIZE       = int(os.getenv("FYP_BATCH", "2"))
+USE_CACHE        = os.getenv("FYP_USE_CACHE", "1") != "0"
+REPETITION_PENALTY = float(os.getenv("FYP_REPETITION_PENALTY", "1.15"))
+NO_REPEAT_NGRAM  = int(os.getenv("FYP_NO_REPEAT_NGRAM", "8"))
 
 # ====== Granite 3.3 models ======
 GRANITE_8B = "ibm-granite/granite-3.3-8b-instruct"
 GRANITE_2B = "ibm-granite/granite-3.3-2b-instruct"
 
 # ====== env overrides ======
-# FYP_MODEL_ID      -> force a specific HF model id (skips auto-pick)
-# FYP_FORCE_MODEL   -> "8b" | "2b" to force family
-# FYP_QUANT         -> "auto" | "fp16" | "8bit" | "4bit"   (default: "4bit")
 ENV_MODEL_ID = os.getenv("FYP_MODEL_ID", "").strip()
-FORCE_FAMILY = os.getenv("FYP_FORCE_MODEL", "").strip().lower()
+FORCE_FAMILY = os.getenv("FYP_FORCE_MODEL", "").strip().lower()   # "8b"|"2b"|""(auto)
 DEFAULT_QUANT = os.getenv("FYP_QUANT", "4bit").strip().lower()
 
 # ====== Basic I/O ======
@@ -52,7 +50,6 @@ def save_summary(summary: str, path: str) -> None:
         f.write(summary.strip())
 
 def strip_timestamps(text: str) -> str:
-    """Remove leading '[12.3s - 45.6s] ' style timestamps from lines."""
     lines = text.splitlines()
     cleaned = []
     for line in lines:
@@ -72,13 +69,6 @@ def _cuda_vram_gb() -> Tuple[bool, float]:
         return False, 0.0
 
 def _choose_family(quant: str) -> str:
-    """
-    Policy:
-      - VRAM ≤ 6 GB  -> 2B
-      - VRAM 7–11 GB -> 2B, unless quant == "4bit" and VRAM ≥ 8 GB -> 8B
-      - VRAM ≥ 12 GB -> 8B
-    Overrides: ENV_MODEL_ID, FORCE_FAMILY
-    """
     if ENV_MODEL_ID:
         return ENV_MODEL_ID
     if FORCE_FAMILY in ("8b", "2b"):
@@ -87,44 +77,43 @@ def _choose_family(quant: str) -> str:
     has_cuda, vram_gb = _cuda_vram_gb()
     if not has_cuda:
         return GRANITE_2B
-
     if vram_gb <= 6.0:
         return GRANITE_2B
-
     if 7.0 <= vram_gb < 12.0:
         if quant.lower() == "4bit" and vram_gb >= 8.0:
             return GRANITE_8B
         return GRANITE_2B
-
-    # vram >= 12
     return GRANITE_8B
 
 # ====== Model / pipeline builder ======
 def _build_textgen_pipeline(quant: str,
                             gpu_mem_gb: int,
                             max_new_tokens: int):
-    """
-    Build a HF text-generation pipeline with VRAM-aware config.
-    """
     model_id = _choose_family(quant)
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
-    # Ensure pad/eos are defined for generation; many causal LMs use eos as pad
     if tok.pad_token_id is None and tok.eos_token_id is not None:
         tok.pad_token = tok.eos_token
 
     has_cuda, vram_gb = _cuda_vram_gb()
-    # allow CUDA from 4 GB upward so 2B-4bit can run on small GPUs
-    want_cuda = has_cuda and vram_gb >= 4.0
+    want_cuda = has_cuda and vram_gb >= 4.0  # allow 2B-4bit on small GPUs
 
     device_map = "auto" if want_cuda else None
-    # Soft cap VRAM for offload; leave ~2 GB headroom but never below 4 GB
     cap = max(4, int(min(max(vram_gb - 2, 4), gpu_mem_gb))) if want_cuda else 0
     max_memory = {0: f"{cap}GiB", "cpu": "64GiB"} if want_cuda else None
-
     offload_dir = os.path.join(os.getcwd(), "offload_cache")
     os.makedirs(offload_dir, exist_ok=True)
 
-    # Quantised path first (lowest VRAM)
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        temperature=0.0,
+        top_p=1.0,
+        repetition_penalty=REPETITION_PENALTY,
+        no_repeat_ngram_size=NO_REPEAT_NGRAM,
+        eos_token_id=tok.eos_token_id,
+        pad_token_id=tok.pad_token_id,
+    )
+
     if quant in ("4bit", "8bit") and want_cuda:
         try:
             from transformers import BitsAndBytesConfig
@@ -143,23 +132,12 @@ def _build_textgen_pipeline(quant: str,
                 offload_folder=offload_dir,
                 low_cpu_mem_usage=True,
             )
-            gen = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=tok,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=0.0,
-                top_p=1.0,
-                repetition_penalty=REPETITION_PENALTY,
-            )
+            gen = pipeline("text-generation", model=model, tokenizer=tok, **gen_kwargs)
             gen.model.config.use_cache = USE_CACHE
             return gen, tok, model_id
         except Exception:
-            # bitsandbytes not available or failed -> fall through
             pass
 
-    # fp16 on sufficiently large GPUs
     if (quant in ("auto", "fp16")) and want_cuda and vram_gb >= 10.0:
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
@@ -169,41 +147,18 @@ def _build_textgen_pipeline(quant: str,
             offload_folder=offload_dir,
             low_cpu_mem_usage=True,
         )
-        gen = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tok,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=0.0,
-            top_p=1.0,
-            repetition_penalty=REPETITION_PENALTY,
-        )
+        gen = pipeline("text-generation", model=model, tokenizer=tok, **gen_kwargs)
         gen.model.config.use_cache = USE_CACHE
         return gen, tok, model_id
 
-    # CPU fallback (or tiny VRAM / quant failure)
     model = AutoModelForCausalLM.from_pretrained(model_id, low_cpu_mem_usage=True)
-    gen = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tok,
-        device=-1,
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        temperature=0.0,
-        top_p=1.0,
-        repetition_penalty=REPETITION_PENALTY,
-    )
+    gen = pipeline("text-generation", model=model, tokenizer=tok, device=-1, **gen_kwargs)
     gen.model.config.use_cache = USE_CACHE
     return gen, tok, model_id
 
 # ====== Token-based chunking ======
 def _make_token_chunks(tokenizer: AutoTokenizer, text: str,
                        max_tokens: int, overlap_tokens: int) -> List[str]:
-    """
-    Split by tokens (not chars) so each prompt stays within a predictable budget.
-    """
     paragraphs = [p for p in re.split(r"\n{2,}", text) if p.strip()]
     chunks: List[str] = []
     cur_ids: List[int] = []
@@ -243,9 +198,9 @@ def _make_token_chunks(tokenizer: AutoTokenizer, text: str,
 # ====== Prompts (markdown-structured) ======
 def _mk_chunk_prompt(chunk: str, word_limit: int) -> str:
     return (
-        f"You are an expert meeting summariser.\n"
-        f"Summarise the following transcript content in **no more than {word_limit} words**.\n\n"
-        "Output **GitHub-flavoured Markdown** with the EXACT sections and formatting below:\n\n"
+        "You are an expert meeting summariser.\n\n"
+        f"Write **ONE** markdown summary of **no more than {word_limit} words total**.\n"
+        "Output **GitHub-flavoured Markdown** with these sections **exactly once**, in this order:\n\n"
         "**Meeting Summary**\n\n"
         "**Overview**\n"
         "- One short paragraph.\n\n"
@@ -255,15 +210,15 @@ def _mk_chunk_prompt(chunk: str, word_limit: int) -> str:
         "- Bullet points; write `None` if no explicit decisions.\n\n"
         "**Action Items**\n"
         "1. Numbered list; include **Owner:** and **Deadline:** when present. Write `None` if empty.\n\n"
-        "Do not include the transcript. Do not add extra sections.\n\n"
+        "Do not include the transcript. Do not add extra sections, footers, or repeated headings.\n\n"
         "Transcript chunk:\n"
         f"{chunk}\n"
     )
 
 def _mk_agg_prompt(combined: str, word_limit: int) -> str:
     return (
-        f"Combine these draft summaries into a single, cohesive meeting summary of **no more than {word_limit} words**.\n\n"
-        "Output **GitHub-flavoured Markdown** with the EXACT sections and formatting below:\n\n"
+        f"Combine these draft summaries into **one** cohesive markdown summary of **no more than {word_limit} words**.\n"
+        "Return **ONLY** the markdown with these sections **exactly once**, in this order:\n\n"
         "**Meeting Summary**\n\n"
         "**Overview**\n"
         "- One short paragraph.\n\n"
@@ -273,94 +228,266 @@ def _mk_agg_prompt(combined: str, word_limit: int) -> str:
         "- Bullet points; write `None` if no explicit decisions.\n\n"
         "**Action Items**\n"
         "1. Numbered list; include **Owner:** and **Deadline:** when present. Write `None` if empty.\n\n"
-        "Do not add any other sections.\n\n"
+        "No other headings, footers, or repeated sections.\n\n"
         "Draft summaries:\n"
         f"{combined}\n"
     )
 
-# ====== Post-formatting guardrails ======
-_SECTION_ORDER = [
-    r"\*\*Meeting Summary\*\*",
-    r"\*\*Overview\*\*",
-    r"\*\*Key Discussion Points\*\*",
-    r"\*\*Decisions\*\*",
-    r"\*\*Action Items\*\*",
+# ====== Canonicalization helpers ======
+# headers we want to print exactly like this:
+_PRINT_HEADERS = [
+    "**Meeting Summary**",
+    "**Overview**",
+    "**Key Discussion Points**",
+    "**Decisions**",
+    "**Action Items**",
 ]
 
-def _normalize_markdown(md: str) -> str:
-    """Light touch cleanup: ensure required headers exist and spacing is tidy."""
-    md = md.strip()
+# flexible patterns that can match messy model output for each section
+_MATCH_PATTERNS: Dict[str, List[str]] = {
+    "**Meeting Summary**": [
+        r"\*\*Meeting\s+Summary\*\*",             # our exact header
+        r"#{1,6}\s*Meeting\s+Summary",            # markdown ATX
+        r"(?m)^Meeting\s+Summary\s*\n=+\s*$",     # setext style
+    ],
+    "**Overview**": [
+        r"\*\*Overview\*\*",
+        r"#{1,6}\s*Overview",
+    ],
+    "**Key Discussion Points**": [
+        r"\*\*Key\s*Discussion\s*Points\*\*",     # tolerate missing space
+        r"#{1,6}\s*Key\s*Discussion\s*Points",
+        r"\*\*Key\s*DiscussionPoints\*\*",
+    ],
+    "**Decisions**": [
+        r"\*\*Decisions\*\*",
+        r"#{1,6}\s*Decisions?",
+    ],
+    "**Action Items**": [
+        r"\*\*Action\s*Items\*\*",
+        r"#{1,6}\s*Action\s*Items",
+        r"#{1,6}\s*Action\s*Points",
+    ],
+}
 
-    # Ensure each section header exists at least once
-    for header in _SECTION_ORDER:
-        if not re.search(rf"(?mi)^{header}\s*$", md):
-            # Append missing section at the end with placeholder
-            placeholder = "None" if "Decisions" in header or "Action Items" in header else ""
-            md += f"\n\n{header}\n"
-            if "Overview" in header and not placeholder:
-                md += "- \n"
-            elif "Key Discussion Points" in header and not placeholder:
-                md += "- \n"
-            else:
-                md += (placeholder or "- ") + "\n"
+_INSTRUCTION_TAIL = re.compile(r"(?mi)^\s*(?:#{1,6}\s*)?Instruction:.*$", re.MULTILINE)
 
-    # Ensure order by reassembling sections if wildly out of order (best-effort)
-    parts = {}
-    for i, header in enumerate(_SECTION_ORDER):
-        m = re.search(rf"(?mi)^{header}\s*$", md)
+def _strip_instruction_and_trailing_noise(md: str) -> str:
+    # drop anything after an "Instruction:" header/line
+    m = _INSTRUCTION_TAIL.search(md)
+    if m:
+        md = md[:m.start()]
+    # drop explicit "End of Meeting Summary" markers
+    md = re.sub(r"\*\*End of Meeting Summary\*\*", "", md, flags=re.IGNORECASE)
+    return md.strip()
+
+def _find_first(pats: List[str], text: str) -> int:
+    idx = -1
+    for p in pats:
+        m = re.search(p, text, flags=re.IGNORECASE)
         if m:
-            start = m.start()
-            # find next header
-            next_pos = len(md)
-            for j in range(i + 1, len(_SECTION_ORDER)):
-                n = re.search(rf"(?mi)^{_SECTION_ORDER[j]}\s*$", md)
-                if n:
-                    next_pos = min(next_pos, n.start())
-            parts[header] = md[m.start():next_pos].strip()
+            idx = m.start() if idx == -1 else min(idx, m.start())
+    return idx
 
-    if len(parts) >= 3:
-        md = "\n\n".join([parts[h] for h in _SECTION_ORDER if h in parts]).strip()
+def _extract_sections(md: str) -> Dict[str, str]:
+    """
+    Parse messy markdown into the five canonical sections.
+    Returns a dict mapping printed headers to their content (without the header line).
+    """
+    md = _strip_instruction_and_trailing_noise(md)
 
-    # Collapse excess blank lines
-    md = re.sub(r"\n{3,}", "\n\n", md).strip()
-    return md
+    # locate each header's first occurrence
+    locs = {}
+    for hdr, pats in _MATCH_PATTERNS.items():
+        pos = _find_first(pats, md)
+        if pos != -1:
+            locs[hdr] = pos
+
+    if not locs:
+        # nothing recognized; return everything as Overview content
+        return {
+            "**Meeting Summary**": "",
+            "**Overview**": md.strip(),
+            "**Key Discussion Points**": "",
+            "**Decisions**": "",
+            "**Action Items**": "",
+        }
+
+    # slice content between headers in the order they appear in the text
+    ordered_hits = sorted(locs.items(), key=lambda kv: kv[1])
+    slices: Dict[str, str] = {}
+    for i, (hdr, start) in enumerate(ordered_hits):
+        end = len(md)
+        if i + 1 < len(ordered_hits):
+            end = ordered_hits[i + 1][1]
+        block = md[start:end]
+
+        # remove the header line itself (match one of its patterns)
+        header_line_removed = False
+        for p in _MATCH_PATTERNS[hdr]:
+            m = re.search(p, block, flags=re.IGNORECASE)
+            if m:
+                block = block[m.end():]
+                header_line_removed = True
+                break
+        if not header_line_removed:
+            # best effort: drop first line
+            block = "\n".join(block.splitlines()[1:])
+
+        slices[hdr] = block.strip()
+
+    # ensure all five keys present
+    for hdr in _PRINT_HEADERS:
+        slices.setdefault(hdr, "")
+
+    # normalize content of each section
+    slices["**Overview**"] = _clean_overview(slices["**Overview**"])
+    slices["**Key Discussion Points**"] = _clean_bullets(slices["**Key Discussion Points**"])
+    slices["**Decisions**"] = _clean_bullets(slices["**Decisions**"], allow_none=True)
+    slices["**Action Items**"] = _clean_actions(slices["**Action Items**"])
+
+    return slices
+
+def _clean_overview(txt: str) -> str:
+    txt = txt.strip()
+    if not txt:
+        return "- "
+    # collapse multiple lines into a short paragraph bullet
+    lines = [l.strip() for l in txt.splitlines() if l.strip()]
+    para = " ".join(lines)
+    return f"- {para}"
+
+def _clean_bullets(txt: str, allow_none: bool = False) -> str:
+    lines = [l.strip() for l in txt.splitlines() if l.strip()]
+    bullets = []
+    for l in lines:
+        # strip leading markers
+        l = re.sub(r"^[-*•\d\.\)\(]+\s*", "", l)
+        if l.lower() in {"none", "no decisions", "n/a"}:
+            if allow_none:
+                return " - None"
+            else:
+                continue
+        bullets.append(f"- {l}")
+    if not bullets:
+        return "- None" if allow_none else "- "
+    return "\n".join(bullets)
+
+def _clean_actions(txt: str) -> str:
+    lines = [l.rstrip() for l in txt.splitlines() if l.strip()]
+    if not lines:
+        return "1. None"
+    items = []
+    for l in lines:
+        # turn bullets into numbered items; keep existing numbers
+        m = re.match(r"^\s*(\d+)[\.\)]\s*(.+)$", l)
+        if m:
+            content = m.group(2).strip()
+        else:
+            content = re.sub(r"^[-*•]\s*", "", l).strip()
+        # avoid stray standalone 'None'
+        if content.lower() == "none":
+            continue
+        items.append(content)
+    if not items:
+        return "1. None"
+    # re-number
+    out = []
+    for idx, it in enumerate(items, 1):
+        out.append(f"{idx}. {it}")
+    return "\n".join(out)
+
+def _rebuild_markdown(sections: Dict[str, str]) -> str:
+    parts = []
+    for hdr in _PRINT_HEADERS:
+        parts.append(hdr)
+        content = sections.get(hdr, "").strip()
+        if content:
+            parts.append(content)
+        else:
+            # sensible default
+            if hdr in ("**Decisions**", "**Action Items**"):
+                parts.append(" - None" if hdr == "**Decisions**" else "1. None")
+            else:
+                parts.append("- ")
+        parts.append("")  # blank line between sections
+    return "\n".join(parts).strip()
+
+def _keep_single_markdown_block(text: str) -> str:
+    """
+    Keep only the first pass through our required headers and cut if a second pass starts.
+    Also treat setext 'Meeting Summary\\n====' as a second pass trigger.
+    """
+    headers = [h for h in _PRINT_HEADERS]
+    seen = {h: 0 for h in headers}
+    out_lines = []
+    cut = False
+
+    setext_seen = False
+
+    for line in text.splitlines():
+        s = line.strip()
+
+        # setext H1 after we've seen the first block -> cut
+        if re.match(r"(?i)^Meeting\s+Summary\s*$", s):
+            setext_seen = True
+        elif setext_seen and re.match(r"^=+\s*$", s):
+            cut = True
+
+        if any(s.startswith(h) for h in headers):
+            for h in headers:
+                if s.startswith(h):
+                    seen[h] += 1
+                    if seen[h] > 1:
+                        cut = True
+                    break
+        if cut:
+            break
+        out_lines.append(line)
+
+    return "\n".join(out_lines).strip()
+
+def _canonicalize_markdown(md: str) -> str:
+    """
+    Robust normalizer:
+    - keep only first pass of headings
+    - drop 'Instruction' tails, setext extras, and weird markers
+    - parse sections via flexible regex matches
+    - rebuild clean, canonical markdown in the correct order
+    """
+    md = _keep_single_markdown_block(md)
+    secs = _extract_sections(md)
+    canon = _rebuild_markdown(secs)
+    # de-escape if any stray \** slipped in
+    canon = canon.replace(r"\*\*", "**").strip()
+    return canon
 
 # ====== Main summariser ======
 def summarise_text(text: str,
                    word_limit: int = WORD_LIMIT,
                    max_input_tokens: int = MAX_INPUT_TOKENS,
                    overlap_tokens: int = OVERLAP_TOKENS) -> str:
-    """
-    Summarise via per-chunk summaries (batched) + aggregation.
-    VRAM-aware model loading with safe CPU retry on OOM.
-    """
+    gen_cap = max(128, int(word_limit * 1.6))
+
     try:
-        summarizer, tok, model_id = _build_textgen_pipeline(
-            quant=DEFAULT_QUANT,
-            gpu_mem_gb=14,
-            max_new_tokens=word_limit * 2
+        summarizer, tok, _ = _build_textgen_pipeline(
+            quant=DEFAULT_QUANT, gpu_mem_gb=14, max_new_tokens=gen_cap
         )
     except torch.cuda.OutOfMemoryError:
         torch.cuda.empty_cache()
-        summarizer, tok, model_id = _build_textgen_pipeline(
-            quant="auto",
-            gpu_mem_gb=0,
-            max_new_tokens=word_limit * 2
+        summarizer, tok, _ = _build_textgen_pipeline(
+            quant="auto", gpu_mem_gb=0, max_new_tokens=gen_cap
         )
 
-    # Build token-based chunks using the same tokenizer we’ll use for generation
     chunks = _make_token_chunks(tok, text, max_input_tokens, overlap_tokens)
-
-    # Per-chunk prompts
     prompts = [_mk_chunk_prompt(c, word_limit) for c in chunks]
 
-    # Batched generation for speed
     def batched(iterable: List[str], size: int) -> Iterable[List[str]]:
         for i in range(0, len(iterable), size):
             yield iterable[i:i+size]
 
     chunk_summaries: List[str] = []
-    torch.manual_seed(42)  # mild determinism
+    torch.manual_seed(42)
 
     for batch in batched(prompts, max(1, BATCH_SIZE)):
         try:
@@ -368,16 +495,16 @@ def summarise_text(text: str,
                 outs = summarizer(batch, return_full_text=False)
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
-            # Retry whole batch on CPU
             summarizer, tok, _ = _build_textgen_pipeline(
-                quant="auto", gpu_mem_gb=0, max_new_tokens=word_limit * 2
+                quant="auto", gpu_mem_gb=0, max_new_tokens=gen_cap
             )
             with torch.inference_mode():
                 outs = summarizer(batch, return_full_text=False)
-        for o in outs:
-            chunk_summaries.append(_normalize_markdown(o[0]["generated_text"].strip()))
 
-    # Aggregate (single pass)
+        for o in outs:
+            raw = o[0]["generated_text"].strip()
+            chunk_summaries.append(_canonicalize_markdown(raw))
+
     if len(chunk_summaries) == 1:
         final_md = chunk_summaries[0]
     else:
@@ -385,9 +512,8 @@ def summarise_text(text: str,
         agg_prompt = _mk_agg_prompt(combined, word_limit)
         with torch.inference_mode():
             out = summarizer(agg_prompt, return_full_text=False)
-        final_md = _normalize_markdown(out[0]["generated_text"].strip())
+        final_md = _canonicalize_markdown(out[0]["generated_text"].strip())
 
-    # Hard cap by words without cutting sentences (on raw text)
     final_md = _truncate_to_word_limit(final_md, word_limit)
     return final_md
 
