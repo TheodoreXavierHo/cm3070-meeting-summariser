@@ -50,6 +50,7 @@ def save_summary(summary: str, path: str) -> None:
         f.write(summary.strip())
 
 def strip_timestamps(text: str) -> str:
+    """Remove common in-line timestamps like [12.34s - 56.78s] at line start."""
     lines = text.splitlines()
     cleaned = []
     for line in lines:
@@ -197,6 +198,7 @@ def _make_token_chunks(tokenizer: AutoTokenizer, text: str,
 
 # ====== Prompts (markdown-structured) ======
 def _mk_chunk_prompt(chunk: str, word_limit: int) -> str:
+    """Tight prompt forbidding meta like 'Revised Response' or 'Word Count'."""
     return (
         "You are an expert meeting summariser.\n\n"
         f"Write **ONE** markdown summary of **no more than {word_limit} words total**.\n"
@@ -210,12 +212,13 @@ def _mk_chunk_prompt(chunk: str, word_limit: int) -> str:
         "- Bullet points; write `None` if no explicit decisions.\n\n"
         "**Action Items**\n"
         "1. Numbered list; include **Owner:** and **Deadline:** when present. Write `None` if empty.\n\n"
-        "Do not include the transcript. Do not add extra sections, footers, or repeated headings.\n\n"
+        "Do not add extra sections or commentary. Do **not** include 'Revised Response', notes, or word/page counts.\n\n"
         "Transcript chunk:\n"
         f"{chunk}\n"
     )
 
 def _mk_agg_prompt(combined: str, word_limit: int) -> str:
+    """Aggregation prompt with the same 'no meta' constraints."""
     return (
         f"Combine these draft summaries into **one** cohesive markdown summary of **no more than {word_limit} words**.\n"
         "Return **ONLY** the markdown with these sections **exactly once**, in this order:\n\n"
@@ -228,13 +231,14 @@ def _mk_agg_prompt(combined: str, word_limit: int) -> str:
         "- Bullet points; write `None` if no explicit decisions.\n\n"
         "**Action Items**\n"
         "1. Numbered list; include **Owner:** and **Deadline:** when present. Write `None` if empty.\n\n"
-        "No other headings, footers, or repeated sections.\n\n"
+        "No other headings, footers, or repeated sections. Do **not** include 'Revised Response', notes, or word/page counts.\n\n"
         "Draft summaries:\n"
         f"{combined}\n"
     )
 
 # ====== Canonicalization helpers ======
-# headers we want to print exactly like this:
+
+# canonical headers printed to output (order matters)
 _PRINT_HEADERS = [
     "**Meeting Summary**",
     "**Overview**",
@@ -246,37 +250,60 @@ _PRINT_HEADERS = [
 # flexible patterns that can match messy model output for each section
 _MATCH_PATTERNS: Dict[str, List[str]] = {
     "**Meeting Summary**": [
-        r"\*\*Meeting\s+Summary\*\*",             # our exact header
-        r"#{1,6}\s*Meeting\s+Summary",            # markdown ATX
-        r"(?m)^Meeting\s+Summary\s*\n=+\s*$",     # setext style
+        r"\*\*Meeting\s+Summary\*\*",
+        r"#{1,6}\s*Meeting\s+Summary",
+        r"(?:\d+\.\s*)?Meeting\s+Summary",   # numbered heading line
     ],
     "**Overview**": [
         r"\*\*Overview\*\*",
         r"#{1,6}\s*Overview",
+        r"(?:\d+\.\s*)?Overview",
     ],
     "**Key Discussion Points**": [
-        r"\*\*Key\s*Discussion\s*Points\*\*",     # tolerate missing space
+        r"\*\*Key\s*Discussion\s*Points\*\*",
         r"#{1,6}\s*Key\s*Discussion\s*Points",
         r"\*\*Key\s*DiscussionPoints\*\*",
+        r"(?:\d+\.\s*)?Key\s*Discussion\s*Points",
     ],
     "**Decisions**": [
         r"\*\*Decisions\*\*",
         r"#{1,6}\s*Decisions?",
+        r"(?:\d+\.\s*)?Decisions?",
     ],
     "**Action Items**": [
         r"\*\*Action\s*Items\*\*",
         r"#{1,6}\s*Action\s*Items",
+        r"(?:\d+\.\s*)?Action\s*Items",
         r"#{1,6}\s*Action\s*Points",
     ],
 }
 
-_INSTRUCTION_TAIL = re.compile(r"(?mi)^\s*(?:#{1,6}\s*)?Instruction:.*$", re.MULTILINE)
+# lines we should strip entirely (meta/rubric that models tend to add)
+_META_LINE = re.compile(
+    r"(?im)^\s*(?:word\s*count\s*:.*|note\s*:.*|page\s*limit.*|response complies.*|this response complies.*)\s*$"
+)
+# a heading that signals a second pass (we cut everything from here)
+_REVISED_HDR = re.compile(r"(?im)^\s*(?:#{1,6}\s*)?(?:\d+\.\s*)?revised\s+response\s*$")
 
-def _strip_instruction_and_trailing_noise(md: str) -> str:
-    # drop anything after an "Instruction:" header/line
-    m = _INSTRUCTION_TAIL.search(md)
-    if m:
-        md = md[:m.start()]
+# for older “Instruction:” tails
+_INSTRUCTION_TAIL = re.compile(r"(?im)^\s*(?:#{1,6}\s*)?Instruction:.*$")
+
+def _strip_meta_and_noise(md: str) -> str:
+    """Remove rubric/meta lines and cut at 'Revised Response' or 'Instruction:' tails."""
+    # cut at Revised Response section start
+    rr = _REVISED_HDR.search(md)
+    if rr:
+        md = md[: rr.start()]
+
+    # drop anything after an "Instruction:" line
+    inst = _INSTRUCTION_TAIL.search(md)
+    if inst:
+        md = md[: inst.start()]
+
+    # remove typical meta lines like "Word Count:", "Note:", "Page limit…"
+    kept = [ln for ln in md.splitlines() if not _META_LINE.match(ln)]
+    md = "\n".join(kept)
+
     # drop explicit "End of Meeting Summary" markers
     md = re.sub(r"\*\*End of Meeting Summary\*\*", "", md, flags=re.IGNORECASE)
     return md.strip()
@@ -294,7 +321,7 @@ def _extract_sections(md: str) -> Dict[str, str]:
     Parse messy markdown into the five canonical sections.
     Returns a dict mapping printed headers to their content (without the header line).
     """
-    md = _strip_instruction_and_trailing_noise(md)
+    md = _strip_meta_and_noise(md)
 
     # locate each header's first occurrence
     locs = {}
@@ -304,7 +331,7 @@ def _extract_sections(md: str) -> Dict[str, str]:
             locs[hdr] = pos
 
     if not locs:
-        # nothing recognized; return everything as Overview content
+        # nothing recognized; treat everything as Overview content
         return {
             "**Meeting Summary**": "",
             "**Overview**": md.strip(),
@@ -348,6 +375,50 @@ def _extract_sections(md: str) -> Dict[str, str]:
 
     return slices
 
+def _line_is_any_header(line: str) -> str | None:
+    """Return the canonical header key if this line looks like a section heading."""
+    s = line.strip()
+    for hdr, pats in _MATCH_PATTERNS.items():
+        for p in pats:
+            # line-level match for bold, ATX, or numbered headings
+            if re.match(rf"^\s*(?:{p})\s*$", s, flags=re.IGNORECASE):
+                return hdr
+    return None
+
+def _keep_single_markdown_block(text: str) -> str:
+    """
+    Keep only the first pass through our required headers and cut if a second pass starts.
+    Detects bold (**Header**), ATX (# Header), numbered ("12. Header"), and setext (Header + =====).
+    Also stops if a 'Revised Response' heading appears.
+    """
+    out_lines: List[str] = []
+    seen_counts: Dict[str, int] = {h: 0 for h in _PRINT_HEADERS}
+    setext_seen_h1 = False
+
+    for line in text.splitlines():
+        s = line.strip()
+
+        # Revised Response → cut here
+        if _REVISED_HDR.match(s):
+            break
+
+        # setext H1 detection: "Meeting Summary" then "===="
+        if re.match(r"(?i)^meeting\s+summary\s*$", s):
+            setext_seen_h1 = True
+        elif setext_seen_h1 and re.match(r"^=+\s*$", s):
+            break  # second pass setext header → cut
+
+        # detect section headers in multiple styles
+        hdr = _line_is_any_header(s)
+        if hdr is not None:
+            seen_counts[hdr] += 1
+            if seen_counts[hdr] > 1:
+                break  # duplicated heading → cut
+
+        out_lines.append(line)
+
+    return "\n".join(out_lines).strip()
+
 def _clean_overview(txt: str) -> str:
     txt = txt.strip()
     if not txt:
@@ -365,7 +436,7 @@ def _clean_bullets(txt: str, allow_none: bool = False) -> str:
         l = re.sub(r"^[-*•\d\.\)\(]+\s*", "", l)
         if l.lower() in {"none", "no decisions", "n/a"}:
             if allow_none:
-                return " - None"
+                return "- None"
             else:
                 continue
         bullets.append(f"- {l}")
@@ -385,17 +456,12 @@ def _clean_actions(txt: str) -> str:
             content = m.group(2).strip()
         else:
             content = re.sub(r"^[-*•]\s*", "", l).strip()
-        # avoid stray standalone 'None'
         if content.lower() == "none":
             continue
         items.append(content)
     if not items:
         return "1. None"
-    # re-number
-    out = []
-    for idx, it in enumerate(items, 1):
-        out.append(f"{idx}. {it}")
-    return "\n".join(out)
+    return "\n".join(f"{i}. {it}" for i, it in enumerate(items, 1))
 
 def _rebuild_markdown(sections: Dict[str, str]) -> str:
     parts = []
@@ -405,62 +471,29 @@ def _rebuild_markdown(sections: Dict[str, str]) -> str:
         if content:
             parts.append(content)
         else:
-            # sensible default
-            if hdr in ("**Decisions**", "**Action Items**"):
-                parts.append(" - None" if hdr == "**Decisions**" else "1. None")
+            # sensible defaults
+            if hdr == "**Decisions**":
+                parts.append("- None")
+            elif hdr == "**Action Items**":
+                parts.append("1. None")
             else:
                 parts.append("- ")
         parts.append("")  # blank line between sections
     return "\n".join(parts).strip()
 
-def _keep_single_markdown_block(text: str) -> str:
-    """
-    Keep only the first pass through our required headers and cut if a second pass starts.
-    Also treat setext 'Meeting Summary\\n====' as a second pass trigger.
-    """
-    headers = [h for h in _PRINT_HEADERS]
-    seen = {h: 0 for h in headers}
-    out_lines = []
-    cut = False
-
-    setext_seen = False
-
-    for line in text.splitlines():
-        s = line.strip()
-
-        # setext H1 after we've seen the first block -> cut
-        if re.match(r"(?i)^Meeting\s+Summary\s*$", s):
-            setext_seen = True
-        elif setext_seen and re.match(r"^=+\s*$", s):
-            cut = True
-
-        if any(s.startswith(h) for h in headers):
-            for h in headers:
-                if s.startswith(h):
-                    seen[h] += 1
-                    if seen[h] > 1:
-                        cut = True
-                    break
-        if cut:
-            break
-        out_lines.append(line)
-
-    return "\n".join(out_lines).strip()
-
 def _canonicalize_markdown(md: str) -> str:
     """
     Robust normalizer:
-    - keep only first pass of headings
-    - drop 'Instruction' tails, setext extras, and weird markers
+    - strip meta lines + cut at 'Revised Response' and other tails
+    - keep only first pass of headings (bold/#/numbered/setext)
     - parse sections via flexible regex matches
     - rebuild clean, canonical markdown in the correct order
     """
-    md = _keep_single_markdown_block(md)
+    md = _keep_single_markdown_block(_strip_meta_and_noise(md))
     secs = _extract_sections(md)
     canon = _rebuild_markdown(secs)
     # de-escape if any stray \** slipped in
-    canon = canon.replace(r"\*\*", "**").strip()
-    return canon
+    return canon.replace(r"\*\*", "**").strip()
 
 # ====== Main summariser ======
 def summarise_text(text: str,
@@ -518,10 +551,10 @@ def summarise_text(text: str,
     return final_md
 
 def _truncate_to_word_limit(text: str, word_limit: int) -> str:
+    """Approximate truncation by words while preserving Markdown lines."""
     words = re.findall(r"\b\w+\b", text)
     if len(words) <= word_limit:
         return text
-    # Approximate cut by words while preserving markdown lines
     tokens = re.split(r"(\b\w+\b)", text)
     count = 0
     out = []
@@ -533,9 +566,11 @@ def _truncate_to_word_limit(text: str, word_limit: int) -> str:
             break
     result = "".join(out).rstrip()
     # Try to end at a sentence or line break
-    m = re.search(r"[\.!\?]\s+[^\n]*$", result)
+    m = re.search(r"[\.!\?](?:\s|$)", result[::-1])
     if m:
-        result = result[:m.end()].rstrip()
+        # cut at the last sentence terminator
+        cut = len(result) - m.start()
+        result = result[:cut].rstrip()
     return result
 
 # ====== CLI ======
