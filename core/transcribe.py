@@ -17,8 +17,16 @@ import os
 import subprocess
 import torch
 import shutil
+from pathlib import Path
 from faster_whisper import WhisperModel
 from imageio_ffmpeg import get_ffmpeg_exe  # portable ffmpeg locator
+
+# Ensure repository root is importable when executed as a script (python core/transcribe.py)
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from core.constants import AUDIO_EXTS, VIDEO_EXTS
 
 # -------------------------- helpers: file type detection -------------------------- #
 
@@ -26,15 +34,13 @@ def is_video_file(filepath):
     """
     Returns True if the file extension matches a known video format.
     """
-    video_exts = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm'}
-    return os.path.splitext(filepath)[1].lower() in video_exts
+    return os.path.splitext(filepath)[1].lower() in VIDEO_EXTS
 
 def is_audio_file(filepath):
     """
     Returns True if the file extension matches a known audio format.
     """
-    audio_exts = {'.wav', '.mp3', '.aac', '.ogg', '.flac', '.m4a', '.wma'}
-    return os.path.splitext(filepath)[1].lower() in audio_exts
+    return os.path.splitext(filepath)[1].lower() in AUDIO_EXTS
 
 # ------------------------------ ffmpeg audio extract ------------------------------ #
 

@@ -21,6 +21,8 @@ from typing import Dict, Tuple, List, Optional
 
 import streamlit as st
 
+from core.constants import AUDIO_EXTS, VIDEO_EXTS
+
 # ------------------------------ page config ----------------------------------
 
 st.set_page_config(
@@ -42,8 +44,6 @@ COMBINED_FIXED = OUTPUTS_DIR / "combined_transcript.txt"  # not used by core, we
 SUMMARY_FIXED = OUTPUTS_DIR / "summary.txt"
 ACTIONS_FIXED = OUTPUTS_DIR / "action_items.txt"
 
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".flv", ".webm"}
-AUDIO_EXTS = {".wav", ".mp3", ".aac", ".ogg", ".flac", ".m4a", ".wma", ".ogg"}
 MAX_PREVIEW_MB = 75
 
 # Allow-list a few OCR language tags (extend if you enable EasyOCR langs)

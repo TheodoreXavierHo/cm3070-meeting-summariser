@@ -14,14 +14,19 @@ import sys
 import time
 from pathlib import Path
 
+# Ensure repository root is importable when executed as a script (python core/pipeline.py)
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from core.constants import VIDEO_EXTS
+
 # Canonical output paths (match the app)
 TRANSCRIPT = "outputs/transcript.txt"
 SLIDES     = "outputs/slide_texts.txt"
 COMBINED   = "outputs/combined_transcript.txt"
 SUMMARY    = "outputs/summary.txt"
 ACTIONS    = "outputs/action_items.txt"
-
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".flv", ".webm"}
 
 def is_video(path: str) -> bool:
     return Path(path).suffix.lower() in VIDEO_EXTS
