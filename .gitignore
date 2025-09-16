@@ -1,35 +1,37 @@
-# --- Python basics ---
+# Python
 __pycache__/
 *.py[cod]
-*.so           # compiled C extensions
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.log
+*.tmp
 
-# --- Virtual environments ---
-venv/
+# Virtual envs
+.venv/
 .env/
-.env*/         # Conda, Pipenv
+venv/
 
-# --- Jupyter / VSCode / JetBrains ---
-.ipynb_checkpoints/
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
 .vscode/
 .idea/
 
-# --- Data & outputs ---
-data/**/*.mp4
-data/**/*.wav
+# Project artifacts
 outputs/
-*.jsonl
-*.log
-data/samples/
+data/frames/
+offload_cache/
+data/
 
-# --- Model downloads (Whisper, LLaMA, etc.) ---
-whisper-cache/
-~/.cache/huggingface/
-
-# --- OS cruft ---
-.DS_Store
-Thumbs.db
-
-# AMI full corpus (huge)
-data/raw/ami_full/
-/data/frames
-/.venv
+# Caches
+.cache/
+.huggingface/
+transformers_cache/
+accelerate/
