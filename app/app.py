@@ -43,7 +43,7 @@ SUMMARY_FIXED = OUTPUTS_DIR / "summary.txt"
 ACTIONS_FIXED = OUTPUTS_DIR / "action_items.txt"
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".flv", ".webm"}
-AUDIO_EXTS = {".wav", ".mp3", ".aac", ".ogg", ".flac", ".m4a", ".wma"}
+AUDIO_EXTS = {".wav", ".mp3", ".aac", ".ogg", ".flac", ".m4a", ".wma", ".ogg"}
 MAX_PREVIEW_MB = 75
 
 # Allow-list a few OCR language tags (extend if you enable EasyOCR langs)
