@@ -1,29 +1,47 @@
 # Multimodal Meeting & Video Summariser
 
-## *CM3070 Final Year Project (Template 4.1)*
+> Local, privacy-first pipeline that turns meeting **audio/video** into a clean **summary** and **action items**, with optional **slide OCR** for presentation videos.
 
-> Local, privacy-first pipeline for summarising meetings, lectures, and presentations from audio and video files.
-> Built for University of London (UOL) BSc Computer Science (Machine Learning & AI) – SIM Global Education.
+[![Made with Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/UI-Streamlit-ff4b4b.svg)](https://streamlit.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
 ---
 
-## Features
+## Table of Contents
 
-* **Supports both audio and video files** (.wav, .mp3, .mp4, .mov, .mkv, .avi, .flv, .webm)
-* **Automatic Speech Recognition (ASR):**
-  Whisper/Faster-Whisper transcribes speech to text, including timestamps.
-* **Slide OCR for Video:**
-  Extracts slide text from presentation videos using EasyOCR and image deduplication.
-* **Multimodal Summarisation:**
-  Combines transcript and slide text, summarised by a local LLM (Granite-3.2-8B Instruct).
-* **Action Item Extraction:**
-  Extracts actionable tasks, owners, and deadlines using LLM-based prompts.
-* **User-Friendly Web UI:**
-  Streamlit app for upload, processing, and download of all results.
-* **Full local processing:**
-  All computation runs locally for privacy; no data leaves your machine.
-* **Professional formatting:**
-  Expandable slides, YouTube-style transcripts, downloadable results, progress bar, total run timer.
+- [Highlights](#highlights)
+- [System Overview](#system-overview)
+- [Requirements](#requirements)
+- [Install](#install)
+  - [Windows (one-click)](#windows-one-click)
+  - [macOS / Linux](#macos--linux)
+- [Run](#run)
+  - [Streamlit UI](#streamlit-ui)
+  - [CLI (batch)](#cli-batch)
+- [Configuration](#configuration)
+- [Project Structure](#project-structure)
+- [Outputs](#outputs)
+- [Performance Tips](#performance-tips)
+- [Troubleshooting](#troubleshooting)
+- [Privacy & Ethics](#privacy--ethics)
+- [License](#license)
+- [Credits](#credits)
+
+---
+
+## Highlights
+
+- **Audio + Video input:** `.wav .mp3 .m4a .mp4 .mov .mkv .avi .flv .webm`
+- **ASR (speech-to-text):** Faster-Whisper (CUDA if available; CPU fallback)
+- **Slide OCR (video):** EasyOCR + perceptual-hash frame de-duplication
+- **Multimodal summarisation:** transcript + slide text summarised by local LLM **IBM Granite-3.3 (8B/2B)**
+- **Action items extraction:** numbered tasks with optional **Owner** and **Deadline**
+- **Streamlit UI:** upload → process → preview → download
+- **Per-run artifacts:** each run saved under `outputs/<run_id>/` (prevents clobbering)
+- **Deterministic output:** strict post-processing prevents duplicate headings or “Revised Response”
+- **Graceful empties:** if there’s nothing to summarise/extract, we write the literal `none`
+- **Privacy-first:** all processing is local—no cloud calls
 
 ---
 
@@ -31,128 +49,181 @@
 
 ![System Overview](./Diagram_FYP.png)
 
-The system processes audio or video input, extracts slides and transcript, fuses both, and generates summaries and action items—all in a privacy-first, local pipeline.
+Flow: Upload → **ASR (Whisper/Faster-Whisper)** → *(video only)* **OCR (EasyOCR)** → Combine → **Summarise (Granite)** → **Extract Actions** → Downloads.
 
 ---
 
-## Usage
+## Requirements
 
-1. **Install dependencies**
-   (Recommended: Python 3.9+, with `pip` and `virtualenv`)
+- Python **3.10+**
+- `ffmpeg` on PATH (audio extraction)
+- Optional: NVIDIA GPU + recent CUDA for best performance
 
-   ```sh
-   pip install -r requirements.txt
-   ```
-
-   * For OCR: [EasyOCR](https://github.com/JaidedAI/EasyOCR), [OpenCV](https://opencv.org/), [imagehash](https://github.com/JohannesBuchner/imagehash)
-   * For ASR: [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [ffmpeg](https://ffmpeg.org/) (must be installed and on your PATH)
-   * For LLM: [transformers](https://huggingface.co/docs/transformers/index)
-   * For UI: [streamlit](https://streamlit.io/)
-
-2. **Start the app**
-
-   ```sh
-   streamlit run app/app.py
-   ```
-
-3. **Upload your meeting audio or video file.**
-
-   * All processing will run locally; output files appear in `outputs/`.
-   * UI displays transcript, extracted slides, combined input, summary, action items, with download buttons for each.
+> If you need a specific PyTorch build for your GPU/CUDA, install it first using the official PyTorch instructions, then install the rest of the dependencies.
 
 ---
 
-## File Structure
+## Install
 
-``` md
-project-root/
-│
-├─ app/
-│   └─ app.py             # Streamlit frontend
-│
-├─ core/
-│   ├─ transcribe.py      # Audio/video → transcript (Whisper)
-│   ├─ video_ocr.py       # Video → slide text (EasyOCR + deduplication)
-│   ├─ summarise.py       # Transcript (+slides) → summary (Granite-3.2-8B)
-│   ├─ extract_actions.py # Extract action items (Granite-3.2-8B)
-│   └─ pipeline.py        # CLI batch runner
-│
-├─ outputs/               # All result files (auto-created)
-├─ data/samples/          # Uploaded user files (auto-created)
-├─ data/frames/           # Video frames for OCR (auto-cleared)
-├─ requirements.txt
-├─ README.md
-└─ .streamlit/config.toml # (optional) increase maxUploadSize if needed
+### Windows (one-click)
+
+1. **Double-click** `run_app.bat`  
+   - Runs `tools\install_torch.py` to install a compatible PyTorch wheel (CUDA if available, else CPU).
+   - Installs Python dependencies.
+   - Launches the Streamlit UI.
+
+> If the console shows a Torch warning, close the window and run `run_app.bat` again (it is idempotent).
+
+### macOS / Linux
+
+```bash
+# optional: create a virtual environment
+python -m venv .venv
+# macOS/Linux:
+source .venv/bin/activate
+# Windows (PowerShell):
+# .venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
+````
+
+---
+
+## Run
+
+### Streamlit UI
+
+```bash
+streamlit run app/app.py
+```
+
+1. Upload an audio or video file.
+2. Click **Process file**.
+3. Explore tabs for **Slides (OCR)**, **Transcript**, **Combined**, **Summary**, and **Action Items**.
+4. Use **Download** buttons to save results.
+
+### CLI (batch)
+
+```bash
+python core/pipeline.py \
+  --media data/samples/input.mp4 \
+  --outdir outputs/2025-09-16-demo \
+  --interval 5 --lang en [--cpu]
+```
+
+All step outputs are written into the chosen `--outdir`.
+
+---
+
+## Configuration
+
+Environment variables (optional, advanced):
+
+| Variable                 | Default  | Description                                       |
+| ------------------------ | -------- | ------------------------------------------------- |
+| `FYP_QUANT`              | `4bit`   | Model quant: `4bit` \| `8bit` \| `fp16` \| `auto` |
+| `FYP_REPETITION_PENALTY` | `1.15`   | Penalise repetition in generation                 |
+| `FYP_NO_REPEAT_NGRAM`    | `8`      | N-gram blocking size                              |
+| `FYP_MODEL_ID`           | *(auto)* | Override Hugging Face model id                    |
+| `FYP_FORCE_MODEL`        | *(auto)* | Force family: `8b` \| `2b`                        |
+| `FYP_MAX_INPUT_TOKENS`   | `2048`   | Chunk size (input tokens)                         |
+| `FYP_OVERLAP_TOKENS`     | `256`    | Overlap between chunks                            |
+| `FYP_BATCH`              | `2`      | Generation batch size                             |
+
+Increase Streamlit upload limit via `.streamlit/config.toml`:
+
+```toml
+[server]
+maxUploadSize = 1024  # MB
 ```
 
 ---
 
-## Model and Pipeline Details
+## Project Structure
 
-* **Speech Recognition:**
-  *Faster-Whisper* (`large-v2`, CUDA or CPU fallback)
+```text
+project-root/
+├─ app/
+│  └─ app.py                    # Streamlit frontend (per-run snapshots; partial re-runs)
+├─ core/
+│  ├─ transcribe.py             # ASR (Faster-Whisper)
+│  ├─ video_ocr.py              # Slide OCR (EasyOCR + hash de-dup)
+│  ├─ summarise.py              # LLM summary (Granite-3.3 8B/2B)
+│  ├─ extract_actions.py        # Action item extraction (Granite-3.3)
+│  └─ pipeline.py               # CLI orchestrator
+├─ tools/
+│  └─ install_torch.py          # Chooses CUDA/CPU Torch build and installs it
+├─ outputs/                     # Per-run artifacts (auto-created)
+├─ data/
+│  ├─ samples/                  # Uploaded inputs (UI snapshot)
+│  └─ frames/                   # Extracted frames for OCR
+├─ offload_cache/               # HF/accelerate offload dir
+├─ requirements.txt
+├─ run_app.bat                  # Windows launcher
+└─ .streamlit/config.toml
+```
 
-  * Outputs timestamped transcript
+---
 
-* **Summarisation / Action Extraction:**
-  *IBM Granite-3.2-8B-Instruct* (local via HuggingFace/transformers)
+## Outputs
 
-  * Sliding window + aggregation for long context
-  * Final summary limited to 500 words (configurable)
-  * Action items deduplicated, owner/deadline extracted if possible
+Each run is snapshotted under `outputs/<run_id>/`:
 
-* **OCR:**
-  *EasyOCR* (GPU if available, falls back to CPU)
+- `transcript.txt` – timestamped ASR transcript
+- `slide_texts.txt` – OCR’d slide text *(video only)*
+- `combined_transcript.txt` – transcript + slides
+- `summary.txt` – canonical markdown summary (**`none`** if no content)
+- `action_items.txt` – numbered items (**`none`** if nothing actionable)
+- `params.json` – run parameters (UI)
 
-  * Image deduplication by perceptual hash, fuzzy text similarity, topic clustering
+> The UI also mirrors “fixed” files under `outputs/` for backward compatibility, then copies them into the run folder.
 
-* **UI:**
-  *Streamlit*
+---
 
-  * Results: Expandable slide cards, YouTube-style transcript, progress bar, timer
+## Performance Tips
+
+- **GPU strongly recommended** for Granite-8B; Granite-2B works on low VRAM or CPU (slower).
+- Keep `FYP_QUANT=4bit` (default) for best VRAM efficiency; try `8bit` if quality dips.
+- OCR is the heaviest stage on long videos—raise frame interval (e.g., `5 → 8` seconds) to speed it up.
+
+---
+
+## Troubleshooting
+
+- **Torch/CUDA**
+  If `run_app.bat` installs CPU wheels on a GPU machine, check:
+
+  - `nvidia-smi` works (driver OK).
+  - Your PyTorch build matches CUDA. Re-run `run_app.bat` to reattempt install.
+
+- **ffmpeg not found**
+  Install ffmpeg and ensure it’s on PATH.
+
+- **Large uploads blocked**
+  Increase `maxUploadSize` in `.streamlit/config.toml`.
+
+- **Empty outputs (`none`)**
+  If the combined transcript is empty or uninformative, `summary.txt` and/or `action_items.txt` will contain `none`.
 
 ---
 
 ## Privacy & Ethics
 
-* **All computation is local.**
-  No data is sent to external servers; user uploads are never logged or shared.
-* **Model weights** are downloaded from public sources; check [HuggingFace T\&Cs](https://huggingface.co/ibm-granite/granite-3.2-8b-instruct) for licensing.
-* **User responsibility:** Ensure any meeting or video files are used in compliance with organisational policy and data privacy laws.
+- **No cloud calls**: all computation is local.
+- **Licensing**: check licenses for IBM Granite models and other dependencies.
+- **Compliance**: only process media you are authorised to use.
 
 ---
 
-## Limitations & Future Work
+## License
 
-* **OCR only extracts visible text**—charts, graphs, and images without readable text are not included.
-* **English language only** for best results (other languages are untested).
-* **Latency:** Video OCR and LLM summarisation are computationally expensive.
-* **Slide detection** uses content deduplication; slide transitions or complex animations may reduce accuracy.
-* **Planned improvements:**
-
-  * Automated chart/graph summarisation
-  * Diarisation (speaker attribution)
-  * Multi-language support
-  * PDF and CSV export
-  * GPU auto-detection and settings UI
+This project is licensed under the [MIT License](./LICENSE).
 
 ---
 
-## Citation & Credits
+## Credits
 
-* Whisper, Faster-Whisper, EasyOCR, Transformers by HuggingFace, IBM Granite-3.2-8B-Instruct
+- **Whisper / Faster-Whisper**, **Transformers**, **EasyOCR**, **imagehash**, **OpenCV**
+- **IBM Granite-3.3-8B/2B Instruct** (local via Hugging Face)
 
 ---
-
-## Quick Start Tips
-
-* **Increase file upload size:**
-  Edit `.streamlit/config.toml` as follows to allow >200MB files:
-
-  ``` md
-  [server]
-  maxUploadSize = 1024
-  ```
-
-* **GPU recommended** for large models (check CUDA setup for PyTorch and EasyOCR).
-* **Clear outputs:** All result files are written to the `outputs/` folder.
